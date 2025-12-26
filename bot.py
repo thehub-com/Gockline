@@ -1,108 +1,64 @@
-import os, sqlite3, random, time, threading
+import time
+import sqlite3
 from flask import Flask, request, jsonify
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
-
-conn = sqlite3.connect("gock.db", check_same_thread=False)
-cur = conn.cursor()
-
-# ---------- TABLES ----------
-cur.execute("""CREATE TABLE IF NOT EXISTS users (
- id INTEGER PRIMARY KEY AUTOINCREMENT,
- tg_id INTEGER UNIQUE,
- password TEXT,
- expires_at INTEGER
-)""")
-
-cur.execute("""CREATE TABLE IF NOT EXISTS profiles (
- user_id INTEGER PRIMARY KEY,
- nick TEXT,
- username TEXT,
- avatar TEXT
-)""")
-
-cur.execute("""CREATE TABLE IF NOT EXISTS messages (
- id INTEGER PRIMARY KEY AUTOINCREMENT,
- from_id INTEGER,
- to_id INTEGER,
- text TEXT,
- time INTEGER
-)""")
-
-conn.commit()
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)  # 🔥 ЭТО РЕШАЕТ CORS
 
-# ---------- HELPERS ----------
-def now(): return int(time.time())
-def gen_pass(): return str(random.randint(100000, 999999))
+# ---------- DATABASE ----------
+db = sqlite3.connect("gock.db", check_same_thread=False)
+cur = db.cursor()
 
-# ---------- BOT ----------
-@dp.message_handler(commands=["start"])
-async def start(m: types.Message):
-    kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("🔐 Получить пароль", callback_data="get")
-    )
-    await m.answer("GockLine регистрация", reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data == "get")
-async def get_pass(c: types.CallbackQuery):
-    tg = c.from_user.id
-    p = gen_pass()
-    exp = now() + 600
-
-    cur.execute("SELECT id FROM users WHERE tg_id=?", (tg,))
-    r = cur.fetchone()
-    if r:
-        uid = r[0]
-        cur.execute("UPDATE users SET password=?, expires_at=? WHERE tg_id=?", (p, exp, tg))
-    else:
-        cur.execute("INSERT INTO users (tg_id,password,expires_at) VALUES (?,?,?)", (tg,p,exp))
-        uid = cur.lastrowid
-        cur.execute("INSERT INTO profiles (user_id,nick) VALUES (?,?)", (uid,f"user{uid}"))
-    conn.commit()
-
-    await c.message.edit_text(f"ID: {uid}\nПароль: {p}")
-
-# ---------- API LOGIN ----------
-@app.route("/login", methods=["POST"])
-def login():
-    d = request.json
-    cur.execute("SELECT expires_at FROM users WHERE id=? AND password=?", (d["id"], d["password"]))
-    r = cur.fetchone()
-    if not r or r[0] < now():
-        return jsonify(ok=False)
-    return jsonify(ok=True)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender INTEGER,
+    receiver INTEGER,
+    text TEXT,
+    time INTEGER
+)
+""")
+db.commit()
 
 # ---------- SEND MESSAGE ----------
-@app.route("/message/send", methods=["POST"])
+@app.route("/send", methods=["POST"])
 def send():
-    d = request.json
+    data = request.json
+    sender = data.get("from")
+    receiver = data.get("to")
+    text = data.get("text")
+
+    if not sender or not receiver or not text:
+        return jsonify(ok=False, error="bad data")
+
     cur.execute(
-        "INSERT INTO messages (from_id,to_id,text,time) VALUES (?,?,?,?)",
-        (d["from"], d["to"], d["text"], now())
+        "INSERT INTO messages (sender, receiver, text, time) VALUES (?,?,?,?)",
+        (sender, receiver, text, int(time.time()))
     )
-    conn.commit()
+    db.commit()
+
     return jsonify(ok=True)
 
 # ---------- GET MESSAGES ----------
-@app.route("/message/get", methods=["POST"])
-def get():
-    d = request.json
+@app.route("/get/<int:user_id>", methods=["GET"])
+def get_messages(user_id):
     cur.execute(
-        "SELECT from_id,text,time FROM messages WHERE to_id=? ORDER BY time",
-        (d["me"],)
+        "SELECT sender, text, time FROM messages WHERE receiver=? OR sender=? ORDER BY time",
+        (user_id, user_id)
     )
     rows = cur.fetchall()
-    return jsonify(messages=[
-        {"from":r[0],"text":r[1],"time":r[2]} for r in rows
-    ])
+
+    messages = []
+    for r in rows:
+        messages.append({
+            "from": r[0],
+            "text": r[1],
+            "time": r[2]
+        })
+
+    return jsonify(messages)
 
 # ---------- START ----------
 if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
-    executor.start_polling(dp, skip_updates=True)
+    app.run(host="0.0.0.0", port=10000)
