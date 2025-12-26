@@ -2,16 +2,22 @@ import os
 import sqlite3
 import random
 import time
+import threading
 
+from flask import Flask, request, jsonify
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# ================== CONFIG ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN not set")
 
+# ================== BOT ==================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-# ---------- DATABASE ----------
+# ================== DATABASE ==================
 conn = sqlite3.connect("gock.db", check_same_thread=False)
 cur = conn.cursor()
 
@@ -25,47 +31,50 @@ CREATE TABLE IF NOT EXISTS users (
 """)
 conn.commit()
 
-# ---------- KEYBOARDS ----------
-get_pass_kb = InlineKeyboardMarkup().add(
-    InlineKeyboardButton("🔐 Получить пароль", callback_data="get_pass")
+# ================== FLASK ==================
+app = Flask(__name__)
+
+# ================== KEYBOARDS ==================
+kb_get = InlineKeyboardMarkup().add(
+    InlineKeyboardButton("🔐 Получить пароль", callback_data="get")
 )
 
-regen_kb = InlineKeyboardMarkup().add(
-    InlineKeyboardButton("🔄 Перегенерировать пароль", callback_data="regen_pass")
+kb_regen = InlineKeyboardMarkup().add(
+    InlineKeyboardButton("🔄 Перегенерировать пароль", callback_data="regen")
 )
 
-# ---------- HELPERS ----------
-def generate_password():
+# ================== HELPERS ==================
+def gen_pass():
     return str(random.randint(100000, 999999))
 
 def now():
     return int(time.time())
 
-# ---------- HANDLERS ----------
+# ================== BOT HANDLERS ==================
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     await message.answer(
         "🚧 GockLine — регистрация\n\n"
         "Нажми кнопку ниже, чтобы получить одноразовый пароль.\n"
         "⏳ Действует 10 минут",
-        reply_markup=get_pass_kb
+        reply_markup=kb_get
     )
 
-@dp.callback_query_handler(lambda c: c.data in ["get_pass", "regen_pass"])
-async def get_or_regen(callback: types.CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data in ["get", "regen"])
+async def get_pass(callback: types.CallbackQuery):
     tg_id = callback.from_user.id
-    password = generate_password()
-    expires = now() + 600  # 10 минут
+    password = gen_pass()
+    expires = now() + 600
 
-    cur.execute("SELECT id FROM users WHERE tg_id = ?", (tg_id,))
-    user = cur.fetchone()
+    cur.execute("SELECT id FROM users WHERE tg_id=?", (tg_id,))
+    row = cur.fetchone()
 
-    if user:
+    if row:
+        user_id = row[0]
         cur.execute(
             "UPDATE users SET password=?, expires_at=? WHERE tg_id=?",
             (password, expires, tg_id)
         )
-        user_id = user[0]
     else:
         cur.execute(
             "INSERT INTO users (tg_id, password, expires_at) VALUES (?, ?, ?)",
@@ -82,16 +91,43 @@ async def get_or_regen(callback: types.CallbackQuery):
         f"⏳ Действует 10 минут\n\n"
         f"Используй его в приложении",
         parse_mode="Markdown",
-        reply_markup=regen_kb
+        reply_markup=kb_regen
     )
 
-# ---------- CLEANER ----------
-async def cleanup():
+# ================== API ==================
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.json
+    user_id = data.get("id")
+    password = data.get("password")
+
+    cur.execute(
+        "SELECT expires_at FROM users WHERE id=? AND password=?",
+        (user_id, password)
+    )
+    row = cur.fetchone()
+
+    if not row:
+        return jsonify(ok=False, error="Неверные данные"), 401
+
+    if row[0] < now():
+        return jsonify(ok=False, error="Пароль истёк"), 403
+
+    return jsonify(ok=True)
+
+# ================== CLEANER ==================
+def cleaner():
     while True:
         cur.execute("DELETE FROM users WHERE expires_at < ?", (now(),))
         conn.commit()
-        await asyncio.sleep(60)
+        time.sleep(60)
 
-# ---------- START ----------
+# ================== START ==================
 if __name__ == "__main__":
+    threading.Thread(target=cleaner, daemon=True).start()
+    threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=10000),
+        daemon=True
+    ).start()
+
     executor.start_polling(dp, skip_updates=True)
