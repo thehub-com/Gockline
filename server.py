@@ -1,98 +1,110 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
 import os
 import time
 
 app = Flask(__name__)
 CORS(app)
 
-DB_NAME = "database.db"
+# ---- ВРЕМЕННОЕ ХРАНИЛИЩЕ (потом БД) ----
+users = {}        # user_id -> profile
+codes = {}        # code -> time
+messages = {}     # chat_id -> messages
 
-# ---------- БАЗА ДАННЫХ ----------
-def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+# ---- ПРОСТОЙ ГЕНЕРАТОР ID ----
+def next_user_id():
+    return len(users) + 1
 
-def init_db():
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER UNIQUE,
-        username TEXT UNIQUE,
-        nickname TEXT,
-        created_at INTEGER
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# ---------- ВРЕМЕННОЕ ХРАНИЛИЩЕ КОДОВ ----------
-# ВРЕМЕННО! Потом объединим с bot.py через БД
-codes = {
-    # telegram_id: "123456"
-}
-
-# ---------- API ----------
-@app.route("/")
-def home():
-    return "GockLine server online"
-
-# 🔐 РЕГИСТРАЦИЯ
-@app.route("/api/register", methods=["POST"])
-def register():
+# ---- ПРОВЕРКА КОДА ОТ БОТА ----
+@app.route("/verify", methods=["POST"])
+def verify_code():
     data = request.json
-
-    telegram_id = data.get("telegram_id")
     code = data.get("code")
-    username = data.get("username")
-    nickname = data.get("nickname")
 
-    if not all([telegram_id, code, username]):
-        return jsonify({"error": "missing_data"}), 400
+    if not code:
+        return jsonify({"error": "NO_CODE"}), 400
 
-    # ❗ ВРЕМЕННАЯ ПРОВЕРКА КОДА
-    saved_code = codes.get(telegram_id)
-    if saved_code != code:
-        return jsonify({"error": "invalid_code"}), 403
+    if code not in codes:
+        return jsonify({"error": "INVALID_CODE"}), 403
 
-    conn = get_db()
-    c = conn.cursor()
+    # код живёт 10 минут
+    if time.time() - codes[code] > 600:
+        del codes[code]
+        return jsonify({"error": "CODE_EXPIRED"}), 403
 
-    try:
-        c.execute(
-            "INSERT INTO users (telegram_id, username, nickname, created_at) VALUES (?, ?, ?, ?)",
-            (telegram_id, username, nickname, int(time.time()))
-        )
-        conn.commit()
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "user_exists"}), 409
-    finally:
-        conn.close()
+    user_id = next_user_id()
+    users[user_id] = {
+        "id": user_id,
+        "username": None,
+        "avatar": None,
+        "bio": "",
+        "gip": 0
+    }
 
-    return jsonify({"status": "ok"})
+    del codes[code]
 
-# 👤 ПРОФИЛЬ
-@app.route("/api/profile/<int:user_id>")
-def profile(user_id):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT id, username, nickname FROM users WHERE id=?", (user_id,))
-    user = c.fetchone()
-    conn.close()
+    return jsonify({
+        "status": "ok",
+        "user_id": user_id
+    })
 
-    if not user:
-        return jsonify({"error": "not_found"}), 404
 
-    return jsonify(dict(user))
+# ---- СОХРАНЕНИЕ ПРОФИЛЯ ----
+@app.route("/profile/save", methods=["POST"])
+def save_profile():
+    data = request.json
+    user_id = data.get("user_id")
 
-# ---------- ЗАПУСК ----------
+    if user_id not in users:
+        return jsonify({"error": "USER_NOT_FOUND"}), 404
+
+    users[user_id]["username"] = data.get("username")
+    users[user_id]["bio"] = data.get("bio", "")
+
+    return jsonify({"status": "saved"})
+
+
+# ---- ПОЛУЧИТЬ ПРОФИЛЬ ----
+@app.route("/profile/<int:user_id>")
+def get_profile(user_id):
+    if user_id not in users:
+        return jsonify({"error": "USER_NOT_FOUND"}), 404
+    return jsonify(users[user_id])
+
+
+# ---- ОТПРАВКА СООБЩЕНИЯ ----
+@app.route("/send", methods=["POST"])
+def send_message():
+    data = request.json
+    chat_id = data.get("chat_id")
+    text = data.get("text")
+    from_id = data.get("from_id")
+
+    if not chat_id or not text:
+        return jsonify({"error": "BAD_DATA"}), 400
+
+    messages.setdefault(chat_id, []).append({
+        "from": from_id,
+        "text": text,
+        "time": int(time.time())
+    })
+
+    return jsonify({"status": "sent"})
+
+
+# ---- ПОЛУЧИТЬ СООБЩЕНИЯ ----
+@app.route("/messages/<chat_id>")
+def get_messages(chat_id):
+    return jsonify(messages.get(chat_id, []))
+
+
+# ---- ТЕСТОВЫЙ РОУТ ----
+@app.route("/")
+def index():
+    return "GockLine server is running"
+
+
+# ---- ВАЖНО ДЛЯ RENDER ----
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
