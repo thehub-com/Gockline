@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
 # ===== НАСТРОЙКИ =====
-TOKEN = "ТВОЙ_BOT_TOKEN_ОСТАВЬ_КАК_ЕСТЬ"
+TOKEN = "8261801832:AAEHUDbVv1lnBCjHtao_oeGNT_ODowA6Q8g"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
