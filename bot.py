@@ -1,64 +1,51 @@
-import time
-import sqlite3
-from flask import Flask, request, jsonify
+import asyncio
+import threading
+from flask import Flask, jsonify
 from flask_cors import CORS
 
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+
+# ===== НАСТРОЙКИ =====
+TOKEN = "ТВОЙ_BOT_TOKEN_ОСТАВЬ_КАК_ЕСТЬ"
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+# ===== FLASK (HTML <-> SERVER) =====
 app = Flask(__name__)
-CORS(app)  # 🔥 ЭТО РЕШАЕТ CORS
+CORS(app)  # <<< ЭТО ФИКСИТ CORS
 
-# ---------- DATABASE ----------
-db = sqlite3.connect("gock.db", check_same_thread=False)
-cur = db.cursor()
+USERS = {
+    1: {
+        "id": 1,
+        "username": "user1",
+        "verified": False
+    }
+}
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender INTEGER,
-    receiver INTEGER,
-    text TEXT,
-    time INTEGER
-)
-""")
-db.commit()
+@app.route("/")
+def home():
+    return "GOCK server is running"
 
-# ---------- SEND MESSAGE ----------
-@app.route("/send", methods=["POST"])
-def send():
-    data = request.json
-    sender = data.get("from")
-    receiver = data.get("to")
-    text = data.get("text")
+@app.route("/get/<int:user_id>")
+def get_user(user_id):
+    user = USERS.get(user_id)
+    if not user:
+        return jsonify({"error": "user not found"}), 404
+    return jsonify(user)
 
-    if not sender or not receiver or not text:
-        return jsonify(ok=False, error="bad data")
+# ===== TELEGRAM BOT =====
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.answer("GOCK bot online")
 
-    cur.execute(
-        "INSERT INTO messages (sender, receiver, text, time) VALUES (?,?,?,?)",
-        (sender, receiver, text, int(time.time()))
-    )
-    db.commit()
-
-    return jsonify(ok=True)
-
-# ---------- GET MESSAGES ----------
-@app.route("/get/<int:user_id>", methods=["GET"])
-def get_messages(user_id):
-    cur.execute(
-        "SELECT sender, text, time FROM messages WHERE receiver=? OR sender=? ORDER BY time",
-        (user_id, user_id)
-    )
-    rows = cur.fetchall()
-
-    messages = []
-    for r in rows:
-        messages.append({
-            "from": r[0],
-            "text": r[1],
-            "time": r[2]
-        })
-
-    return jsonify(messages)
-
-# ---------- START ----------
-if __name__ == "__main__":
+# ===== RUN BOTH =====
+def run_flask():
     app.run(host="0.0.0.0", port=10000)
+
+async def run_bot():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    threading.Thread(target=run_flask).start()
+    asyncio.run(run_bot())
