@@ -1,51 +1,44 @@
-import asyncio
-import threading
-from flask import Flask, jsonify
-from flask_cors import CORS
-
+import random
+import time
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram.utils import executor
 
-# ===== НАСТРОЙКИ =====
 TOKEN = "8261801832:AAEHUDbVv1lnBCjHtao_oeGNT_ODowA6Q8g"
+
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(bot)
 
-# ===== FLASK (HTML <-> SERVER) =====
-app = Flask(__name__)
-CORS(app)  # <<< ЭТО ФИКСИТ CORS
+codes = {}  # user_id: (code, expire_time)
 
-USERS = {
-    1: {
-        "id": 1,
-        "username": "user1",
-        "verified": False
-    }
-}
+@dp.message_handler(commands=['start'])
+async def start(msg: types.Message):
+    code = random.randint(100000, 999999)
+    expire = time.time() + 600  # 10 минут
 
-@app.route("/")
-def home():
-    return "GOCK server is running"
+    codes[msg.from_user.id] = (code, expire)
 
-@app.route("/get/<int:user_id>")
-def get_user(user_id):
-    user = USERS.get(user_id)
-    if not user:
-        return jsonify({"error": "user not found"}), 404
-    return jsonify(user)
+    await msg.answer(
+        f"🔐 GockLine\n\n"
+        f"Ваш код регистрации:\n\n"
+        f"👉 <b>{code}</b>\n\n"
+        f"⏱ Действует 10 минут",
+        parse_mode="HTML"
+    )
 
-# ===== TELEGRAM BOT =====
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer("GOCK bot online")
+@dp.message_handler(commands=['code'])
+async def get_code(msg: types.Message):
+    data = codes.get(msg.from_user.id)
+    if not data:
+        await msg.answer("❌ Код не найден. Напишите /start")
+        return
 
-# ===== RUN BOTH =====
-def run_flask():
-    app.run(host="0.0.0.0", port=10000)
+    code, expire = data
+    if time.time() > expire:
+        await msg.answer("⏱ Код истёк. Напишите /start")
+        del codes[msg.from_user.id]
+        return
 
-async def run_bot():
-    await dp.start_polling(bot)
+    await msg.answer(f"Ваш активный код: {code}")
 
 if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
-    asyncio.run(run_bot())
+    executor.start_polling(dp, skip_updates=True)
